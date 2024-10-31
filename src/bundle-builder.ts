@@ -84,7 +84,7 @@ function combineTargets(targets: Target[]): Target[] {
 }
 
 type Options = {
-  discountType: 'PERCENTAGE' | 'FIXED_AMOUNT'
+  discountType: 'PERCENTAGE' | 'FIXED_AMOUNT' | 'FIXED_BUNDLE_PRICE'
   title: string
 }
 
@@ -158,47 +158,111 @@ function combineDiscounts(discounts: ReturnType<typeof calculateBestDiscountComb
  */
 function calculateBestDiscountCombo(lineItems: CartItem[], tiers: Tier[], options: Options) {
   tiers.sort((a, b) => b.amount - a.amount);
-  const expandedLineItems: CartItem[] = lineItems.flatMap(lineItem => Array(lineItem.quantity).fill(lineItem).map(lineItem => ({...lineItem, quantity: 1})));
+  // sort items, higher price first
+  const sortedLineItems = lineItems.sort((a, b) => Number(b.cost.amountPerQuantity.amount) - Number(a.cost.amountPerQuantity.amount));
+  let expandedLineItems: CartItem[] = sortedLineItems.flatMap(lineItem => Array(lineItem.quantity).fill(lineItem).map(lineItem => ({...lineItem, quantity: 1})));
 
-  let discounts: {
-    message: string
-    value: PercentageValue | FixedAmountValue
-    targets: CartItem[]
-  }[] = []
-  const appliedQuantityOfTier = Math.max(...tiers.reduce((prev: number[], item: Tier) => {
-    if(item.quantity <= expandedLineItems.length) return [...prev, item.quantity];
-    return prev;
-  }, [0]))
-
-  const appliedTier = tiers.find(tier => appliedQuantityOfTier === tier.quantity)
-  if(appliedTier) {
-    discounts = [{
-      message: appliedTier.title || options.title,
-      value: options.discountType === 'PERCENTAGE' ? {
-        percentage: {
-          value: appliedTier.amount.toString()
-        }
-      } : {
-        fixedAmount: {
-          amount: appliedTier.amount.toString(),
-        }
-      },
-      targets: Object.values(groupBy(
-        expandedLineItems,
-        item => item.id
-      )).reduce((final, lineItemGroups) => {
-        return [
-          ...final,
-          {
-            ...lineItemGroups[0],
-            quantity: lineItemGroups.reduce((sum, item) => sum+item.quantity, 0)
+  if (options.discountType === 'FIXED_BUNDLE_PRICE') {
+    let discounts: {
+      message: string
+      value: PercentageValue | FixedAmountValue
+      targets: CartItem[]
+    }[] = []
+    while (expandedLineItems.length > 0) {
+      const appliedQuantityOfTier = Math.max(...tiers.reduce((prev: number[], item: Tier) => {
+        if(item.quantity <= expandedLineItems.length) return [...prev, item.quantity];
+        return prev;
+      }, [0]))
+      const appliedTier = tiers.find(tier => appliedQuantityOfTier === tier.quantity)
+      if (appliedTier) {
+        discounts.push({
+          message: appliedTier.title || options.title,
+          value: {
+            fixedAmount: {
+              amount: appliedTier.amount.toString()
+            }
+          },
+          targets: Object.values(groupBy(
+            expandedLineItems.slice(0, appliedTier.quantity),
+            item => item.id
+          )).reduce((final, lineItemGroups) => {
+            return [
+              ...final,
+              {
+                ...lineItemGroups[0],
+                quantity: lineItemGroups.reduce((sum, item) => sum+item.quantity, 0)
+              }
+            ]
+          }, [] as CartItem[])
+        })
+        expandedLineItems = expandedLineItems.slice(appliedTier.quantity)
+      } else {
+        discounts.push({
+          message: 'NO DISCOUNT',
+          value: {
+            fixedAmount: {
+              amount: expandedLineItems.reduce((sum, item) => sum + parseFloat(item.cost.amountPerQuantity.amount), 0).toString(),
+            }
+          },
+          targets: Object.values(groupBy(
+            expandedLineItems,
+            item => item.id
+          )).reduce((final, lineItemGroups) => {
+            return [
+              ...final,
+              {
+                ...lineItemGroups[0],
+                quantity: lineItemGroups.reduce((sum, item) => sum+item.quantity, 0)
+              }
+            ]
+          }, [] as CartItem[])
+        })
+        expandedLineItems = []
+      }
+    }
+   
+    return discounts
+  } else {
+    let discounts: {
+      message: string
+      value: PercentageValue | FixedAmountValue
+      targets: CartItem[]
+    }[] = []
+    const appliedQuantityOfTier = Math.max(...tiers.reduce((prev: number[], item: Tier) => {
+      if(item.quantity <= expandedLineItems.length) return [...prev, item.quantity];
+      return prev;
+    }, [0]))
+  
+    const appliedTier = tiers.find(tier => appliedQuantityOfTier === tier.quantity)
+    if(appliedTier) {
+      discounts = [{
+        message: appliedTier.title || options.title,
+        value: options.discountType === 'PERCENTAGE' ? {
+          percentage: {
+            value: appliedTier.amount.toString()
           }
-        ]
-      }, [] as CartItem[])
-    }]
+        } : {
+          fixedAmount: {
+            amount: appliedTier.amount.toString(),
+          }
+        },
+        targets: Object.values(groupBy(
+          expandedLineItems,
+          item => item.id
+        )).reduce((final, lineItemGroups) => {
+          return [
+            ...final,
+            {
+              ...lineItemGroups[0],
+              quantity: lineItemGroups.reduce((sum, item) => sum+item.quantity, 0)
+            }
+          ]
+        }, [] as CartItem[])
+      }]
+    }
+  
+    return discounts;
   }
-
-  return discounts;
 }
 export default function run(input: InputQuery): FunctionResult {
   const definition: MetafieldValue = JSON.parse(
@@ -224,7 +288,6 @@ export default function run(input: InputQuery): FunctionResult {
     discountType,
     title,
   });
-
 
   const result: FunctionResult = {
     discountApplicationStrategy: DiscountApplicationStrategy.Maximum,
